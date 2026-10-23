@@ -21,7 +21,7 @@ networks:
     ipam: { config: [{ subnet: 172.16.3.0/24 }] }
 
 services:
-  # ---------- authoritative tier ----------
+  # authoritative tier
   root-ns:
     <<: *bind
     container_name: root-ns
@@ -49,7 +49,7 @@ services:
       - ./config/domain:/etc/bind:ro
     networks: { authoritative: { ipv4_address: 172.16.3.30 } }
 
-  # ---------- resolver tier ----------
+  # resolver tier
   resolver:
     <<: *bind
     container_name: resolver
@@ -60,7 +60,7 @@ services:
       - ./config/resolver:/etc/bind:ro
     networks: { resolver: { ipv4_address: 172.16.2.10 } }
 
-  # ---------- client tier ----------
+  # client tier
   webserver:
     image: nginx:1.27-alpine
     container_name: webserver
@@ -81,7 +81,7 @@ services:
       - ./common/node-init.sh:/usr/local/bin/node-init.sh:ro
     networks: { client: { ipv4_address: 172.16.1.10 } }
 
-  # ---------- routers (the only forwarders) ----------
+  # routers (the only forwarders)
   edge-router:
     build: ./tools
     image: cs6008-tools
