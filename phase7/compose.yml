@@ -1,0 +1,184 @@
+name: cs6008-phase7
+
+x-bind: &bind
+  image: internetsystemsconsortium/bind9:9.20
+  cap_add: [NET_ADMIN]
+  entrypoint: ["/usr/local/bin/dnssec-init.sh"]
+  command: ["named", "-g", "-u", "bind", "-c", "/etc/bind/named.conf"]
+
+volumes:
+  signed:          # signed zones, keys, and the root trust anchor
+  pki:             # private CA + resolver TLS cert
+
+networks:
+  client:
+    driver: bridge
+    driver_opts: { com.docker.network.bridge.enable_ip_masquerade: "false" }
+    ipam: { config: [{ subnet: 172.16.1.0/24 }] }
+  resolver:
+    driver: bridge
+    driver_opts: { com.docker.network.bridge.enable_ip_masquerade: "false" }
+    ipam: { config: [{ subnet: 172.16.2.0/24 }] }
+  authoritative:
+    driver: bridge
+    driver_opts: { com.docker.network.bridge.enable_ip_masquerade: "false" }
+    ipam: { config: [{ subnet: 172.16.3.0/24 }] }
+
+services:
+  # one-shot: private CA + resolver TLS certificate
+  ca:
+    build: ./tools
+    image: cs6008-tools
+    container_name: ca
+    entrypoint: ["/bin/sh", "/gen-certs.sh"]
+    restart: "no"
+    environment: { ROGUE: "${ROGUE:-0}" }
+    volumes:
+      - ./pki/gen-certs.sh:/gen-certs.sh:ro
+      - pki:/pki
+    networks: [resolver]
+
+  # authoritative tier (now serving SIGNED zones)
+  root-ns:
+    <<: *bind
+    container_name: root-ns
+    environment:
+      ROUTES: "172.16.2.0/24=172.16.3.3"
+      SIGN_ZONE: "."
+      SIGN_SRC: "/etc/bind/db.root"
+      SIGN_OUT: "/signed/db.root.signed"
+      SIGN_CHILD: "com"
+    volumes:
+      - ./common/dnssec-init.sh:/usr/local/bin/dnssec-init.sh:ro
+      - ./config/root:/etc/bind:ro
+      - signed:/signed
+    networks: { authoritative: { ipv4_address: 172.16.3.10 } }
+
+  tld-ns:
+    <<: *bind
+    container_name: tld-ns
+    environment:
+      ROUTES: "172.16.2.0/24=172.16.3.3"
+      SIGN_ZONE: "com"
+      SIGN_SRC: "/etc/bind/db.com"
+      SIGN_OUT: "/signed/db.com.signed"
+      SIGN_CHILD: "example.com"
+    volumes:
+      - ./common/dnssec-init.sh:/usr/local/bin/dnssec-init.sh:ro
+      - ./config/tld:/etc/bind:ro
+      - signed:/signed
+    networks: { authoritative: { ipv4_address: 172.16.3.20 } }
+
+  domain-ns:
+    <<: *bind
+    container_name: domain-ns
+    environment:
+      ROUTES: "172.16.2.0/24=172.16.3.3"
+      SIGN_ZONE: "example.com"
+      SIGN_SRC: "/etc/bind/db.example.com"
+      SIGN_OUT: "/signed/db.example.com.signed"
+    volumes:
+      - ./common/dnssec-init.sh:/usr/local/bin/dnssec-init.sh:ro
+      - ./config/domain:/etc/bind:ro
+      - signed:/signed
+    networks: { authoritative: { ipv4_address: 172.16.3.30 } }
+
+  # validating resolver (DNSSEC on, root key as trust anchor)
+  resolver:
+    <<: *bind
+    container_name: resolver
+    depends_on:
+      ca: { condition: service_completed_successfully }
+    environment:
+      ROUTES: "172.16.3.0/24=172.16.2.3 172.16.1.0/24=172.16.2.2"
+      WAIT_ANCHOR: "1"
+    volumes:
+      - ./common/dnssec-init.sh:/usr/local/bin/dnssec-init.sh:ro
+      - ./config/resolver:/etc/bind:ro
+      - signed:/signed:ro
+      - pki:/pki:ro
+    networks: { resolver: { ipv4_address: 172.16.2.10 } }
+
+  # client tier
+  webserver:
+    image: nginx:1.27-alpine
+    container_name: webserver
+    volumes:
+      - ./web/index.html:/usr/share/nginx/html/index.html:ro
+    networks: { client: { ipv4_address: 172.16.1.20 } }
+
+  rogue-web:
+    image: nginx:1.27-alpine
+    container_name: rogue-web
+    volumes:
+      - ./web-rogue/index.html:/usr/share/nginx/html/index.html:ro
+    networks: { client: { ipv4_address: 172.16.1.30 } }
+
+  # rogue DoT server: impersonates the resolver with the rogue cert (attack ii)
+  rogue-dot:
+    image: internetsystemsconsortium/bind9:9.20
+    container_name: rogue-dot
+    entrypoint: ["/usr/sbin/named", "-g", "-u", "bind", "-c", "/etc/bind/named.conf"]
+    depends_on:
+      ca: { condition: service_completed_successfully }
+    volumes:
+      - ./rogue:/etc/bind:ro
+      - pki:/pki:ro
+    networks: { client: { ipv4_address: 172.16.1.101 } }
+
+  client:
+    build: ./tools
+    image: cs6008-tools
+    container_name: client
+    cap_add: [NET_ADMIN]
+    entrypoint: ["/usr/local/bin/node-init.sh"]
+    command: ["sleep", "infinity"]
+    environment: { ROUTES: "172.16.2.0/24=172.16.1.2" }
+    dns: ["172.16.2.10"]
+    extra_hosts: ["resolver.cs6008.local:172.16.2.10"]
+    depends_on:
+      ca: { condition: service_completed_successfully }
+    volumes:
+      - ./common/node-init.sh:/usr/local/bin/node-init.sh:ro
+      - signed:/signed:ro
+      - pki:/pki:ro
+    networks: { client: { ipv4_address: 172.16.1.10 } }
+
+  # routers
+  edge-router:
+    build: ./tools
+    image: cs6008-tools
+    container_name: edge-router
+    cap_add: [NET_ADMIN]
+    sysctls: [ "net.ipv4.ip_forward=1" ]
+    entrypoint: ["/bin/sh", "/edge-init.sh"]
+    command: ["sleep", "infinity"]
+    environment: { ROUTES: "172.16.1.10/32=172.16.1.100", ROGUE_MITM: "${ROGUE_MITM:-0}" }
+    volumes:
+      - ./common/edge-init.sh:/edge-init.sh:ro
+    networks:
+      client:   { ipv4_address: 172.16.1.2 }
+      resolver: { ipv4_address: 172.16.2.2 }
+
+  core-router:
+    build: ./tools
+    image: cs6008-tools
+    container_name: core-router
+    sysctls: [ "net.ipv4.ip_forward=1" ]
+    command: ["sleep", "infinity"]
+    networks:
+      resolver:      { ipv4_address: 172.16.2.3 }
+      authoritative: { ipv4_address: 172.16.3.3 }
+
+  # the on-path attacker (Phase 2 binary, unchanged)
+  attacker:
+    build: ./attacker
+    image: cs6008-attacker
+    container_name: attacker
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls: [ "net.ipv4.ip_forward=1" ]
+    entrypoint: ["/bin/sh", "/attacker-init.sh"]
+    environment: { FORGE: "${FORGE:-0}", BLOCK853: "${BLOCK853:-0}" }
+    volumes:
+      - ./common/attacker-init.sh:/attacker-init.sh:ro
+    networks: { client: { ipv4_address: 172.16.1.100 } }
