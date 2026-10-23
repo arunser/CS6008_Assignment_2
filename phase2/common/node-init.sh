@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-# ROUTES="cidr=gateway cidr=gateway ..."  (space separated)
+# ROUTES="cidr=gateway ..." (space separated static routes)
 if [ -n "$ROUTES" ]; then
   for r in $ROUTES; do
     net="${r%=*}"; gw="${r#*=}"

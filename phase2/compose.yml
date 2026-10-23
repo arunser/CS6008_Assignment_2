@@ -21,7 +21,7 @@ networks:
     ipam: { config: [{ subnet: 172.16.3.0/24 }] }
 
 services:
-  # ---------- authoritative tier (unchanged from phase 1) ----------
+  # authoritative tier (unchanged from phase 1)
   root-ns:
     <<: *bind
     container_name: root-ns
@@ -49,7 +49,7 @@ services:
       - ./config/domain:/etc/bind:ro
     networks: { authoritative: { ipv4_address: 172.16.3.30 } }
 
-  # ---------- resolver tier (unchanged from phase 1) ----------
+  # resolver tier (unchanged from phase 1)
   resolver:
     <<: *bind
     container_name: resolver
@@ -60,7 +60,7 @@ services:
       - ./config/resolver:/etc/bind:ro
     networks: { resolver: { ipv4_address: 172.16.2.10 } }
 
-  # ---------- client tier ----------
+  # client tier
   webserver:
     image: nginx:1.27-alpine
     container_name: webserver
@@ -88,7 +88,7 @@ services:
       - ./common/node-init.sh:/usr/local/bin/node-init.sh:ro
     networks: { client: { ipv4_address: 172.16.1.10 } }
 
-  # ---------- routers ----------
+  # routers
   edge-router:
     build: ./tools
     image: cs6008-tools
@@ -100,7 +100,7 @@ services:
       client:   { ipv4_address: 172.16.1.2 }
       resolver: { ipv4_address: 172.16.2.2 }
 
-  # core-router now also diverts the resolver's inbound replies via the attacker
+  # core-router also diverts the resolver's inbound replies to the attacker
   core-router:
     build: ./tools
     image: cs6008-tools
@@ -116,14 +116,13 @@ services:
       resolver:      { ipv4_address: 172.16.2.3 }
       authoritative: { ipv4_address: 172.16.3.3 }
 
-  # ---------- the on-path attacker ----------
+  # on-path attacker
   attacker:
     build: ./attacker
     image: cs6008-attacker
     container_name: attacker
-    cap_add: [NET_RAW]   # libpcap capture + inject; no promisc, so no NET_ADMIN
-    # must NOT kernel-forward: the libpcap interceptor is the sole relay, so the
-    # genuine reply is consumed here and only our (possibly forged) copy goes on.
+    cap_add: [NET_RAW]   # capture + inject
+    # no kernel forwarding: the interceptor is the sole relay
     sysctls: [ "net.ipv4.ip_forward=0" ]
     environment: { FORGE: "${FORGE:-0}" }
     networks: { resolver: { ipv4_address: 172.16.2.100 } }
